@@ -1,8 +1,4 @@
-// CertiFlow — initial Prisma schema
-// Models will be added in later phases. Run migrations with:
-//   npx prisma migrate dev --name <descriptive_name>
-// After pulling migrations from teammates:
-//   npx prisma migrate deploy
+// CertiFlow — approved PostgreSQL database schema
 
 generator client {
   provider = "prisma-client-js"
@@ -13,4 +9,555 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// No domain models yet — foundation only.
+enum UserRole {
+  TRAINING_CENTRE
+  DISTRICT_OFFICER
+  QUALITY_OFFICER
+  STATE_OFFICER
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum BatchStatus {
+  DRAFT
+  SUBMITTED
+  DISTRICT_REVIEW
+  QUALITY_REVIEW
+  STATE_REVIEW
+  APPROVED
+  ISSUING
+  ISSUED
+  RETURNED
+  REJECTED
+
+  @@map("batch_status")
+}
+
+enum ApprovalStage {
+  DISTRICT
+  QUALITY
+  STATE
+
+  @@map("approval_stage")
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+  RETURNED
+
+  @@map("approval_decision")
+}
+
+enum CertificateStatus {
+  PENDING_GENERATION
+  ISSUED
+  CANCELLED
+
+  @@map("certificate_status")
+}
+
+enum DeliveryStatus {
+  NOT_STARTED
+  PENDING
+  DELIVERED
+  FAILED
+
+  @@map("delivery_status")
+}
+
+enum DeliveryAttemptStatus {
+  QUEUED
+  SENT
+  FAILED
+  TIMEOUT
+  RETRY_SCHEDULED
+
+  @@map("delivery_attempt_status")
+}
+
+enum AiAnalysisStatus {
+  PENDING
+  COMPLETED
+  FAILED
+
+  @@map("ai_analysis_status")
+}
+
+enum AiChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+
+  @@map("ai_chat_role")
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+
+  @@map("outbox_status")
+}
+
+model District {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code      String   @unique @db.VarChar(32)
+  name      String   @db.VarChar(200)
+  stateName String   @map("state_name") @db.VarChar(120)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  trainingCentres TrainingCentre[]
+  users           User[]
+  batches         Batch[]
+
+  @@index([isActive])
+  @@index([name])
+  @@map("districts")
+}
+
+model TrainingCentre {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  districtId   String   @map("district_id") @db.Uuid
+  code         String   @unique @db.VarChar(64)
+  name         String   @db.VarChar(255)
+  contactEmail String?  @map("contact_email") @db.VarChar(320)
+  contactPhone String?  @map("contact_phone") @db.VarChar(32)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  district District @relation(fields: [districtId], references: [id])
+  users    User[]
+  batches  Batch[]
+
+  @@index([districtId])
+  @@index([isActive])
+  @@map("training_centres")
+}
+
+model Course {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code        String   @unique @db.VarChar(64)
+  name        String   @db.VarChar(255)
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batches Batch[]
+
+  @@map("courses")
+}
+
+model User {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email            String    @unique @db.VarChar(320)
+  passwordHash     String    @map("password_hash") @db.VarChar(255)
+  fullName         String    @map("full_name") @db.VarChar(200)
+  role             UserRole
+  districtId       String?   @map("district_id") @db.Uuid
+  trainingCentreId String?   @map("training_centre_id") @db.Uuid
+  isActive         Boolean   @default(true) @map("is_active")
+  lastLoginAt      DateTime? @map("last_login_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  district              District?            @relation(fields: [districtId], references: [id])
+  trainingCentre        TrainingCentre?      @relation(fields: [trainingCentreId], references: [id])
+  createdBatches        Batch[]              @relation("BatchCreator")
+  draftUpdates          BatchWorkingDraft[]  @relation("DraftUpdater")
+  submittedVersions     BatchVersion[]       @relation("VersionSubmitter")
+  approvals             Approval[]           @relation("ApprovalOfficer")
+  approvalCorrections   ApprovalCorrection[] @relation("ApprovalCorrector")
+  cancelledCertificates Certificate[]        @relation("CertificateCanceller")
+  aiAnalyses            AiAnalysis[]         @relation("AnalysisRequester")
+  aiFindingFeedback     AiFindingFeedback[]
+  aiChatSessions        AiChatSession[]
+  auditLogs             AuditLog[]
+
+  // Custom migration CHECK: role-specific district/training-centre FK consistency.
+  @@index([role, isActive])
+  @@index([districtId])
+  @@index([trainingCentreId])
+  @@map("users")
+}
+
+model Batch {
+  id                   String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchNumber          String      @unique @map("batch_number") @db.VarChar(64)
+  trainingCentreId     String      @map("training_centre_id") @db.Uuid
+  courseId             String      @map("course_id") @db.Uuid
+  districtId           String      @map("district_id") @db.Uuid
+  createdByUserId      String      @map("created_by_user_id") @db.Uuid
+  currentVersionId     String?     @map("current_version_id") @db.Uuid
+  currentVersionNumber Int         @default(0) @map("current_version_number")
+  currentStatus        BatchStatus @default(DRAFT) @map("current_status")
+  rowVersion           Int         @default(1) @map("row_version")
+  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  trainingCentre TrainingCentre     @relation(fields: [trainingCentreId], references: [id])
+  course         Course             @relation(fields: [courseId], references: [id])
+  district       District           @relation(fields: [districtId], references: [id])
+  createdBy      User               @relation("BatchCreator", fields: [createdByUserId], references: [id])
+  currentVersion BatchVersion?      @relation("CurrentBatchVersion", fields: [currentVersionId], references: [id])
+  versions       BatchVersion[]     @relation("BatchVersions")
+  workingDraft   BatchWorkingDraft?
+
+  // Custom migration CHECK: current_version_number >= 0 and row_version >= 1.
+  // Batch/district consistency also requires a custom migration CHECK or trigger.
+  @@index([trainingCentreId, currentStatus])
+  @@index([districtId, currentStatus])
+  @@index([currentStatus, updatedAt])
+  @@index([courseId])
+  @@map("batches")
+}
+
+model BatchWorkingDraft {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchId         String   @unique @map("batch_id") @db.Uuid
+  notes           String?
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batch         Batch                 @relation(fields: [batchId], references: [id])
+  updatedByUser User?                 @relation("DraftUpdater", fields: [updatedByUserId], references: [id])
+  candidates    BatchDraftCandidate[]
+
+  @@map("batch_working_drafts")
+}
+
+model BatchDraftCandidate {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workingDraftId String    @map("working_draft_id") @db.Uuid
+  rowNumber      Int       @map("row_number")
+  registrationId String?   @map("registration_id") @db.VarChar(64)
+  candidateId    String?   @map("candidate_id") @db.Uuid
+  fullName       String    @map("full_name") @db.VarChar(200)
+  phoneE164      String?   @map("phone_e164") @db.VarChar(32)
+  email          String?   @db.VarChar(320)
+  dateOfBirth    DateTime? @map("date_of_birth") @db.Date
+  payload        Json?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workingDraft BatchWorkingDraft @relation(fields: [workingDraftId], references: [id])
+  candidate    Candidate?        @relation(fields: [candidateId], references: [id])
+
+  // No registration_id uniqueness is defined; scope remains undecided.
+  @@unique([workingDraftId, rowNumber])
+  @@map("batch_draft_candidates")
+}
+
+model BatchVersion {
+  id                            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchId                       String      @map("batch_id") @db.Uuid
+  versionNumber                 Int         @map("version_number")
+  status                        BatchStatus
+  candidateCount                Int         @map("candidate_count")
+  qualityReviewThresholdApplied Int         @map("quality_review_threshold_applied")
+  requiresQualityReview         Boolean     @map("requires_quality_review")
+  districtApprovalsRequired     Int         @map("district_approvals_required")
+  qualityApprovalsRequired      Int         @map("quality_approvals_required")
+  stateApprovalsRequired        Int         @map("state_approvals_required")
+  submittedAt                   DateTime    @map("submitted_at") @db.Timestamptz(3)
+  submittedByUserId             String      @map("submitted_by_user_id") @db.Uuid
+  returnReason                  String?     @map("return_reason")
+  rejectReason                  String?     @map("reject_reason")
+  notes                         String?
+  createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batch             Batch            @relation("BatchVersions", fields: [batchId], references: [id])
+  submittedBy       User             @relation("VersionSubmitter", fields: [submittedByUserId], references: [id])
+  currentForBatches Batch[]          @relation("CurrentBatchVersion")
+  candidates        BatchCandidate[]
+  approvals         Approval[]
+  aiAnalyses        AiAnalysis[]
+
+  // Custom migration CHECK: version and counts are non-negative; threshold >= 1.
+  @@unique([batchId, versionNumber])
+  @@index([batchId, versionNumber(sort: Desc)])
+  @@index([status, submittedAt])
+  @@index([requiresQualityReview, status])
+  @@map("batch_versions")
+}
+
+model Candidate {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  registrationId String?   @map("registration_id") @db.VarChar(64)
+  fullName       String    @map("full_name") @db.VarChar(200)
+  dateOfBirth    DateTime? @map("date_of_birth") @db.Date
+  gender         String?   @db.VarChar(32)
+  phoneE164      String?   @map("phone_e164") @db.VarChar(32)
+  email          String?   @db.VarChar(320)
+  addressLine    String?   @map("address_line")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  draftCandidates BatchDraftCandidate[]
+  batchCandidates BatchCandidate[]
+
+  // registration_id intentionally has no unique constraint.
+  @@index([phoneE164])
+  @@index([fullName])
+  @@map("candidates")
+}
+
+model BatchCandidate {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchVersionId           String   @map("batch_version_id") @db.Uuid
+  candidateId              String   @map("candidate_id") @db.Uuid
+  rowNumber                Int      @map("row_number")
+  registrationIdSnapshot   String?  @map("registration_id_snapshot") @db.VarChar(64)
+  resultStatus             String   @map("result_status") @db.VarChar(32)
+  importPayload            Json?    @map("import_payload")
+  isEligibleForCertificate Boolean  @default(true) @map("is_eligible_for_certificate")
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batchVersion BatchVersion @relation(fields: [batchVersionId], references: [id])
+  candidate    Candidate    @relation(fields: [candidateId], references: [id])
+  certificate  Certificate?
+  aiFindings   AiFinding[]
+
+  @@unique([batchVersionId, candidateId])
+  @@unique([batchVersionId, rowNumber])
+  @@index([candidateId])
+  @@index([batchVersionId, isEligibleForCertificate])
+  @@map("batch_candidates")
+}
+
+model Approval {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchVersionId String           @map("batch_version_id") @db.Uuid
+  stage          ApprovalStage
+  decision       ApprovalDecision
+  officerId      String           @map("officer_id") @db.Uuid
+  reason         String?
+  decidedAt      DateTime         @map("decided_at") @db.Timestamptz(3)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  batchVersion BatchVersion         @relation(fields: [batchVersionId], references: [id])
+  officer      User                 @relation("ApprovalOfficer", fields: [officerId], references: [id])
+  corrections  ApprovalCorrection[]
+
+  // Custom migration CHECK: REJECTED or RETURNED requires reason.
+  @@unique([batchVersionId, stage, officerId])
+  @@index([batchVersionId, stage, decision])
+  @@index([officerId, decidedAt(sort: Desc)])
+  @@map("approvals")
+}
+
+model ApprovalCorrection {
+  id                String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  approvalId        String           @map("approval_id") @db.Uuid
+  correctionNumber  Int              @map("correction_number")
+  correctedDecision ApprovalDecision @map("corrected_decision")
+  reason            String
+  correctedByUserId String           @map("corrected_by_user_id") @db.Uuid
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  approval    Approval @relation(fields: [approvalId], references: [id])
+  correctedBy User     @relation("ApprovalCorrector", fields: [correctedByUserId], references: [id])
+
+  @@unique([approvalId, correctionNumber])
+  @@index([approvalId])
+  @@index([createdAt])
+  @@map("approval_corrections")
+}
+
+model Certificate {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchCandidateId   String            @unique @map("batch_candidate_id") @db.Uuid
+  certificateNumber  String            @unique @map("certificate_number") @db.VarChar(64)
+  issuanceYear       Int               @map("issuance_year")
+  certificateStatus  CertificateStatus @default(PENDING_GENERATION) @map("certificate_status")
+  deliveryStatus     DeliveryStatus    @default(NOT_STARTED) @map("delivery_status")
+  issuedAt           DateTime?         @map("issued_at") @db.Timestamptz(3)
+  cancelledAt        DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  cancelledByUserId  String?           @map("cancelled_by_user_id") @db.Uuid
+  cancellationReason String?           @map("cancellation_reason")
+  fileStorageKey     String?           @map("file_storage_key") @db.VarChar(512)
+  verificationCode   String?           @map("verification_code") @db.VarChar(64)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batchCandidate   BatchCandidate    @relation(fields: [batchCandidateId], references: [id])
+  cancelledBy      User?             @relation("CertificateCanceller", fields: [cancelledByUserId], references: [id])
+  deliveryAttempts DeliveryAttempt[]
+
+  // Custom migration partial unique index: verification_code WHERE verification_code IS NOT NULL.
+  // Custom migration CHECK: certificate number format and issuance_year match.
+  // Custom migration CHECK: cancelled_at/reason consistency.
+  // Custom migration CHECK: ISSUED requires issued_at and file_storage_key.
+  // Custom migration CHECK: PENDING_GENERATION must not have issued_at/file key/issued timestamp behavior.
+  @@index([certificateStatus])
+  @@index([deliveryStatus])
+  @@index([issuanceYear])
+  @@map("certificates")
+}
+
+model DeliveryAttempt {
+  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  certificateId      String                @map("certificate_id") @db.Uuid
+  attemptNumber      Int                   @map("attempt_number")
+  channel            String                @default("WHATSAPP") @db.VarChar(32)
+  provider           String                @db.VarChar(64)
+  providerMessageId  String?               @map("provider_message_id") @db.VarChar(128)
+  idempotencyKey     String                @unique @map("idempotency_key") @db.VarChar(128)
+  status             DeliveryAttemptStatus
+  errorCode          String?               @map("error_code") @db.VarChar(64)
+  errorMessage       String?               @map("error_message")
+  requestPayloadHash String?               @map("request_payload_hash") @db.VarChar(128)
+  attemptedAt        DateTime              @map("attempted_at") @db.Timestamptz(3)
+  completedAt        DateTime?             @map("completed_at") @db.Timestamptz(3)
+  createdAt          DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  certificate Certificate @relation(fields: [certificateId], references: [id])
+
+  @@unique([certificateId, attemptNumber])
+  @@index([certificateId, attemptedAt(sort: Desc)])
+  @@index([status, attemptedAt])
+  @@map("delivery_attempts")
+}
+
+model AuditLog {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  action         String   @db.VarChar(100)
+  entityType     String   @map("entity_type") @db.VarChar(64)
+  entityId       String   @map("entity_id") @db.Uuid
+  batchId        String?  @map("batch_id") @db.Uuid
+  batchVersionId String?  @map("batch_version_id") @db.Uuid
+  ipAddress      String?  @map("ip_address") @db.Inet
+  userAgent      String?  @map("user_agent")
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actorUser User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+  @@index([batchId, createdAt(sort: Desc)])
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+model OutboxEvent {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventType      String       @map("event_type") @db.VarChar(100)
+  aggregateType  String       @map("aggregate_type") @db.VarChar(64)
+  aggregateId    String       @map("aggregate_id") @db.Uuid
+  payload        Json
+  idempotencyKey String       @unique @map("idempotency_key") @db.VarChar(128)
+  status         OutboxStatus
+  attemptCount   Int          @default(0) @map("attempt_count")
+  availableAt    DateTime     @map("available_at") @db.Timestamptz(3)
+  lockedAt       DateTime?    @map("locked_at") @db.Timestamptz(3)
+  processedAt    DateTime?    @map("processed_at") @db.Timestamptz(3)
+  lastError      String?      @map("last_error")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt    DateTime?    @map("published_at") @db.Timestamptz(3)
+
+  // Custom migration CHECK: attempt_count >= 0.
+  @@index([status, availableAt])
+  @@index([aggregateType, aggregateId])
+  @@index([lockedAt])
+  @@map("outbox_events")
+}
+
+model AiAnalysis {
+  id                String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batchVersionId    String           @map("batch_version_id") @db.Uuid
+  requestedByUserId String?          @map("requested_by_user_id") @db.Uuid
+  provider          String           @db.VarChar(64)
+  modelName         String           @map("model_name") @db.VarChar(128)
+  status            AiAnalysisStatus
+  summary           String?
+  rawResponseRef    String?          @map("raw_response_ref") @db.VarChar(512)
+  promptVersion     String?          @map("prompt_version") @db.VarChar(64)
+  startedAt         DateTime?        @map("started_at") @db.Timestamptz(3)
+  completedAt       DateTime?        @map("completed_at") @db.Timestamptz(3)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  batchVersion BatchVersion @relation(fields: [batchVersionId], references: [id])
+  requestedBy  User?        @relation("AnalysisRequester", fields: [requestedByUserId], references: [id])
+  findings     AiFinding[]
+
+  @@index([batchVersionId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("ai_analyses")
+}
+
+model AiFinding {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aiAnalysisId            String   @map("ai_analysis_id") @db.Uuid
+  severity                String   @db.VarChar(64)
+  category                String   @db.VarChar(64)
+  title                   String   @db.VarChar(255)
+  detail                  String
+  relatedBatchCandidateId String?  @map("related_batch_candidate_id") @db.Uuid
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  aiAnalysis            AiAnalysis          @relation(fields: [aiAnalysisId], references: [id])
+  relatedBatchCandidate BatchCandidate?     @relation(fields: [relatedBatchCandidateId], references: [id])
+  feedback              AiFindingFeedback[]
+
+  @@index([aiAnalysisId])
+  @@index([severity])
+  @@map("ai_findings")
+}
+
+model AiFindingFeedback {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aiFindingId String   @map("ai_finding_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  rating      String   @db.VarChar(32)
+  comment     String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  aiFinding AiFinding @relation(fields: [aiFindingId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([aiFindingId, userId])
+  @@index([aiFindingId])
+  @@index([rating])
+  @@map("ai_finding_feedback")
+}
+
+model AiChatSession {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  batchId        String?  @map("batch_id") @db.Uuid
+  batchVersionId String?  @map("batch_version_id") @db.Uuid
+  title          String?  @db.VarChar(255)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user     User            @relation(fields: [userId], references: [id])
+  messages AiChatMessage[]
+
+  @@index([userId])
+  @@map("ai_chat_sessions")
+}
+
+model AiChatMessage {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId  String     @map("session_id") @db.Uuid
+  role       AiChatRole
+  content    String
+  tokenCount Int?       @map("token_count")
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  session AiChatSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId, createdAt])
+  @@map("ai_chat_messages")
+}
