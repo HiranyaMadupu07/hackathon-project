@@ -1,0 +1,16 @@
+// CertiFlow — initial Prisma schema
+// Models will be added in later phases. Run migrations with:
+//   npx prisma migrate dev --name <descriptive_name>
+// After pulling migrations from teammates:
+//   npx prisma migrate deploy
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// No domain models yet — foundation only.
